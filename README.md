@@ -1,89 +1,192 @@
-#All simulated disk files are written in the current directory with names like:
+# RAID Simulation in Go
+
+This project simulates RAID levels 0, 1, 4, and 5 using regular files as physical disks.
+It was implemented as part of an Operating Systems assignment to understand RAID performance, redundancy, parity logic, and block-based storage systems.
+
+The program:
+
+- Simulates 5 physical disks using .dat files
+- Implements RAID0, RAID1, RAID4, and RAID5
+- Uses XOR-based parity (RAID5 and RAID4)
+- Benchmarks write/read performance (100 MB workload)
+- Prints throughput and total execution times
+- Demonstrates storage capacity differences across RAID levels
+
+---
+
+## How to Run
+
+### Requirements
+- Go 1.20 or newer
+- Windows, macOS, or Linux
+- No external libraries required (only Go standard library)
+
+### Run the program
+From the project root (same folder as main.go):
+
+```bash
+go run .
+```
+
+The program will automatically:
+
+1. Run correctness tests for RAID0, RAID1, RAID4, and RAID5
+2. Run a full benchmark (100 MB read + write) for all four RAID levels
+3. Generate disk files such as:
+
+```
 raid0_disk0.dat … raid0_disk4.dat
 raid1_disk0.dat … raid1_disk4.dat
 raid4_disk0.dat … raid4_disk4.dat
 raid5_disk0.dat … raid5_disk4.dat
+bench_raid0_disk0.dat … bench_raid5_disk4.dat
+```
 
+---
 
-#Design
-Overall Structure
-raid.go
-Defines the RAID interface:
+## Benchmark Description
+
+The benchmark writes a 100 MB dataset in 4 KB blocks, then reads it back.
+
+For each RAID level, it reports:
+
+- Total write time
+- Total read time
+- Per-block latency
+- Throughput in MB/s
+
+These results are used to compare performance against standard RAID expectations.
+
+---
+
+# Project Structure
+
+```
+RAID/
+ ├── main.go        // Entry point: runs tests and benchmarks
+ ├── raid.go        // RAID implementations and Disk abstraction
+ ├── bench.go       // Benchmark engine
+ ├── go.mod         // Go module metadata
+ └── README.md      // Documentation
+```
+
+---
+
+# Design Overview
+
+## RAID Interface
+
+All RAID levels implement the following interface:
+
+```go
 type RAID interface {
     Write(blockNum int, data []byte) error
     Read(blockNum int) ([]byte, error)
 }
+```
+
+## Disk Abstraction
+
+Each simulated disk is a regular file that supports fixed-size block operations.
+
+Functions:
+- WriteBlock(blockNum, data)
+- ReadBlock(blockNum)
+- Uses blockSize = 4096 bytes
+- Seeks to offset = blockNum * blockSize
+- Calls File.Sync() after writes to simulate real disk delay
+
+### Disk file creation
+Each RAID instance creates 5 disk files:
+
+```
+<prefix>_disk0.dat
+<prefix>_disk1.dat
+<prefix>_disk2.dat
+<prefix>_disk3.dat
+<prefix>_disk4.dat
+```
 
 
-#Implements a Disk type that wraps a file and supports:
-WriteBlock(blockNum int, data []byte)
-ReadBlock(blockNum int) ([]byte, error)
-Uses fixed blockSize = 4096 bytes and seeks to blockNum * blockSize.
-Calls Sync() (fsync) after writes to simulate real disk delay.
-Provides createDisks(prefix, blockSize) to create 5 disk files per RAID instance.
+# RAID Level Logic
 
-#Implements:
-RAID0 (striping)
-RAID1 (mirroring)
-RAID4 (striping + dedicated parity disk)
-RAID5 (striping + distributed parity)
+## RAID0 (Striping)
 
-#Includes a factory:
-func NewRAID(level, prefix string, blockSize int) (RAID, error)
-which returns the appropriate RAID implementation.
+- Splits data across all 5 disks.
+- No redundancy.
+- Maximum capacity and performance.
 
-#RAID Level Logic
-RAID0 (Striping)
-Uses all 5 disks for data.
 Mapping:
+
+```go
 diskIndex = blockNum % numDisks
 diskBlock = blockNum / numDisks
-No redundancy, maximum usable capacity.
+```
 
-RAID1 (Mirroring)
-Writes the same block to all disks.
-Reads from the first disk (simplified model, no read load-balancing).
-Usable capacity is one disk; strongest redundancy.
-RAID4 (Striping + Dedicated Parity)
-Disks 0–3: data, disk 4: parity.
-For each stripe:
-Reads all 4 data blocks, replaces one with the new data, recomputes XOR parity, writes data + parity.
-Reads go directly to the appropriate data disk; parity is unused unless a failure is simulated.
 
-RAID5 (Striping + Distributed Parity)
-Parity disk rotates per stripe:
+## RAID1 (Mirroring)
+
+- Writes the same block to all disks.
+- Reads from disk 0 (simplified).
+- Strong redundancy, lowest usable capacity.
+
+
+## RAID4 (Striping + Dedicated Parity Disk)
+
+- Disks 0–3 store data.
+- Disk 4 stores parity (XOR of data blocks in each stripe).
+
+Write procedure:
+
+1. Read all data blocks in the stripe
+2. Replace the updated block
+3. Recompute parity using XOR
+4. Write updated data and parity block
+
+Parity disk can become a bottleneck.
+
+
+## RAID5 (Striping + Distributed Parity)
+
+- Parity rotates across all disks.
+- Data occupies the remaining disks.
+
+Parity disk per stripe:
+
+```go
 parityDisk = stripe % numDisks
-Data blocks occupy all other disks in that stripe.
-On write:
-Reads all data blocks in the stripe (except the one being updated).
-Recomputes parity with XOR.
-Writes data to its data disk and parity to the parity disk.
+```
 
-#Benchmark Design
-Benchmark code is in bench.go, and is invoked from main.go.
-For each RAID level ("0", "1", "4", "5"):
-Create a new RAID instance with prefix bench_raid<level>.
-Set:
-totalMB = 100
-blockSize = 4096
-numBlocks = (totalMB * 1024 * 1024) / blockSize
+Write procedure:
 
-Write phase
-Use a fixed 4 KB buffer (filled with random data once).
-Call Write(i, block) for block i = 0..numBlocks-1.
-Measure total write time and per-block time.
+1. Read other data blocks in the stripe
+2. Recompute parity
+3. Write updated data and parity
 
-Read phase
-Call Read(i) for each logical block.
-Measure total read time and per-block time.
+Reduces bottleneck of RAID4 by rotating parity.
 
-#Print:
-Total time
-Per-block time
-Throughput in MB/s
-These numbers are later compared against textbook expectations for RAID performance.
+# Benchmark Logic (bench.go)
 
-#Dependencies
-Language: Go
-Libraries: only Go standard library
-os, io, fmt, time, math/rand, bytes
+For each RAID level:
+
+1. Generate a 4 KB random block
+2. Compute number of blocks for 100 MB
+3. Write all blocks sequentially
+4. Read all blocks sequentially
+5. Measure:
+   - Total write time
+   - Total read time
+   - Time per block
+   - Throughput in MB/s
+
+
+# Dependencies
+This project uses only Go standard library packages:
+- os
+- io
+- fmt
+- time
+- bytes
+- math/rand
+
+
